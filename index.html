@@ -1,0 +1,342 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Mech Sketch</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #f6f3ea; }
+  canvas { display: block; }
+  #hint {
+    position: fixed; left: 28px; top: 22px;
+    font: 18px "Segoe Print", "Comic Sans MS", "Bradley Hand", cursive;
+    color: #333; pointer-events: none; user-select: none;
+  }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="hint">A / D walk &nbsp;·&nbsp; W jump &nbsp;·&nbsp; S crouch</div>
+<script>
+(() => {
+  const cv = document.getElementById('c');
+  const ctx = cv.getContext('2d');
+  const INK = '#1e1e1e', PAPER = '#f6f3ea';
+  let W, H, DPR;
+
+  function resize() {
+    DPR = Math.min(window.devicePixelRatio || 1, 2);
+    W = innerWidth; H = innerHeight;
+    cv.width = W * DPR; cv.height = H * DPR;
+    cv.style.width = W + 'px'; cv.style.height = H + 'px';
+  }
+  addEventListener('resize', resize);
+  resize();
+
+  // ---------- input ----------
+  const keys = {};
+  addEventListener('keydown', e => {
+    const k = e.key.toLowerCase();
+    if (k === 'w' || k === 'a' || k === 's' || k === 'd') { keys[k] = true; e.preventDefault(); }
+  });
+  addEventListener('keyup', e => { keys[e.key.toLowerCase()] = false; });
+  addEventListener('blur', () => { for (const k in keys) keys[k] = false; });
+  cv.addEventListener('pointerdown', () => window.focus());
+
+  // ---------- sketchy drawing helpers ----------
+  // Seeded RNG so lines "boil" a few times a second instead of every frame.
+  let seed = 1;
+  function rng() {
+    seed = (seed + 0x6D2B79F5) | 0;
+    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  }
+  const J = () => rng() - 0.5;
+  const hash = n => { const s = Math.sin(n * 127.1 + 311.7) * 43758.5453; return s - Math.floor(s); };
+  let jit = 1.6;
+
+  function line(x1, y1, x2, y2, passes = 2) {
+    for (let p = 0; p < passes; p++) {
+      const mx = (x1 + x2) / 2 + J() * jit * 2, my = (y1 + y2) / 2 + J() * jit * 2;
+      ctx.beginPath();
+      ctx.moveTo(x1 + J() * jit, y1 + J() * jit);
+      ctx.quadraticCurveTo(mx, my, x2 + J() * jit, y2 + J() * jit);
+      ctx.stroke();
+    }
+  }
+  function circle(cx, cy, r, passes = 2) {
+    for (let p = 0; p < passes; p++) {
+      const n = Math.max(14, Math.floor(r * 0.9));
+      const start = rng() * Math.PI * 2, over = 0.15 + rng() * 0.3;
+      ctx.beginPath();
+      for (let i = 0; i <= n; i++) {
+        const a = start + (Math.PI * 2 + over) * i / n;
+        const rr = r + J() * jit * 1.2;
+        const x = cx + Math.cos(a) * rr, y = cy + Math.sin(a) * rr;
+        i ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+      }
+      ctx.stroke();
+    }
+  }
+  function fillCircle(cx, cy, r) { ctx.fillStyle = PAPER; ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2); ctx.fill(); }
+  function rect(x, y, w, h, fill = true) {
+    if (fill) { ctx.fillStyle = PAPER; ctx.fillRect(x, y, w, h); }
+    line(x, y, x + w, y); line(x + w, y, x + w, y + h);
+    line(x + w, y + h, x, y + h); line(x, y + h, x, y);
+  }
+  function hatch(x, y, w, h, gap = 6) {
+    for (let i = gap; i < w + h; i += gap) {
+      const x1 = x + Math.min(i, w), y1 = y + Math.max(0, i - w);
+      const x2 = x + Math.max(0, i - h), y2 = y + Math.min(i, h);
+      line(x1, y1, x2, y2, 1);
+    }
+  }
+
+  // ---------- the mech ----------
+  const m = { x: 0, y: 0, vx: 0, vy: 0, face: 1, phase: 0, crouch: 0, onGround: true, land: 0 };
+  const MAXV = 230, THIGH = 50, SHIN = 50;
+  const dust = [];
+
+  function puff(x, n = 7) {
+    for (let i = 0; i < n; i++) {
+      const s = i % 2 ? 1 : -1;
+      dust.push({ x: x + s * (8 + Math.random() * 20), y: -4, vx: s * (40 + Math.random() * 70), vy: -20 - Math.random() * 30, r: 3 + Math.random() * 4, life: 1 });
+    }
+  }
+
+  function update(dt) {
+    const dir = (keys.d ? 1 : 0) - (keys.a ? 1 : 0);
+    const crouching = keys.s && m.onGround;
+    const maxV = crouching ? 90 : MAXV;
+
+    if (dir) { m.vx += dir * 1400 * dt; m.face = dir; }
+    else m.vx -= Math.sign(m.vx) * Math.min(Math.abs(m.vx), 1200 * dt);
+    m.vx = Math.max(-maxV, Math.min(maxV, m.vx));
+
+    if (keys.w && m.onGround) { m.vy = -580; m.onGround = false; puff(m.x, 4); }
+    m.vy += 1500 * dt;
+    m.y += m.vy * dt;
+    m.x += m.vx * dt;
+    if (m.y >= 0) {
+      if (!m.onGround && m.vy > 200) { m.land = 1; puff(m.x); }
+      m.y = 0; m.vy = 0; m.onGround = true;
+    }
+
+    const target = (crouching ? 1 : 0) + m.land * 0.7;
+    m.crouch += (target - m.crouch) * Math.min(1, dt * 12);
+    m.land = Math.max(0, m.land - dt * 4);
+    if (m.onGround) m.phase += m.vx * m.face * dt * 0.045;
+
+    for (let i = dust.length - 1; i >= 0; i--) {
+      const d = dust[i];
+      d.x += d.vx * dt; d.y += d.vy * dt; d.vx *= 0.92; d.r += dt * 10; d.life -= dt * 1.8;
+      if (d.life <= 0) dust.splice(i, 1);
+    }
+  }
+
+  // two-bone IK, knee bends forward
+  function ik(hx, hy, fx, fy) {
+    let dx = fx - hx, dy = fy - hy, d = Math.hypot(dx, dy);
+    const max = THIGH + SHIN - 0.5;
+    if (d > max) { fx = hx + dx / d * max; fy = hy + dy / d * max; dx = fx - hx; dy = fy - hy; d = max; }
+    const a = Math.acos(Math.max(-1, Math.min(1, (THIGH * THIGH + d * d - SHIN * SHIN) / (2 * THIGH * d))));
+    const b = Math.atan2(dy, dx) - a;
+    return { kx: hx + Math.cos(b) * THIGH, ky: hy + Math.sin(b) * THIGH, fx, fy };
+  }
+
+  function drawLeg(hx, hy, side, amt, color) {
+    let fx, fy;
+    if (m.onGround) {
+      const p = m.phase + side;
+      fx = Math.sin(p) * 28 * amt + (side ? -6 : 8);
+      fy = -Math.max(0, Math.cos(p)) * 14 * amt;
+    } else {
+      fx = side ? -12 : 20;
+      fy = hy + 70;
+    }
+    const L = ik(hx, hy, fx, fy);
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 3;
+    line(hx, hy, L.kx, L.ky);
+    line(L.kx, L.ky, L.fx, L.fy);
+    ctx.lineWidth = 2.2;
+    fillCircle(L.kx, L.ky, 5); circle(L.kx, L.ky, 5, 1);
+    // foot
+    line(L.fx - 10, L.fy, L.fx + 16, L.fy);
+    line(L.fx - 10, L.fy, L.fx - 6, L.fy - 7, 1);
+    line(L.fx - 6, L.fy - 7, L.fx + 8, L.fy - 7, 1);
+    line(L.fx + 8, L.fy - 7, L.fx + 16, L.fy, 1);
+    ctx.strokeStyle = INK;
+  }
+
+  function drawMech(t) {
+    const amt = Math.min(1, Math.abs(m.vx) / MAXV);
+    const bob = m.onGround ? -Math.abs(Math.sin(m.phase)) * 4 * amt : 0;
+    const hipH = 88 - m.crouch * 30;
+    const hy = -hipH + bob;
+    const cy = hy - 42;               // cockpit centre
+    const rising = !m.onGround && m.vy < 0;
+
+    ctx.save();
+    ctx.translate(m.x - camX, m.y);
+    ctx.scale(m.face, 1);
+
+    // back leg (lighter, behind)
+    drawLeg(0, hy, Math.PI, amt, '#8a8a8a');
+
+    // jetpack on the back
+    rect(-46, cy - 12, 18, 28);
+    line(-42, cy - 4, -32, cy - 4, 1);
+    line(-42, cy + 4, -32, cy + 4, 1);
+    if (rising) {
+      for (let i = 0; i < 4; i++) {
+        const fx = -37 + J() * 8;
+        line(-37, cy + 17, fx, cy + 30 + rng() * 22, 1);
+      }
+    }
+
+    // pelvis + neck
+    rect(-16, hy - 7, 32, 14);
+    hatch(-16, hy - 7, 32, 14, 7);
+    line(-4, hy - 7, -6, cy + 26);
+    line(6, hy - 7, 8, cy + 26);
+
+    // antenna
+    line(-10, cy - 26, -20, cy - 50);
+    circle(-20, cy - 52, 3, 1);
+
+    // cockpit
+    fillCircle(2, cy, 30);
+    circle(2, cy, 30);
+    // window + pilot
+    line(-2, cy - 16, 26, cy - 10, 1);
+    line(26, cy - 10, 28, cy + 6, 1);
+    circle(14, cy - 3, 5, 1);
+    line(14, cy + 2, 12, cy + 12, 1);
+    // little rivets
+    circle(-14, cy + 14, 1.5, 1);
+    circle(-4, cy + 20, 1.5, 1);
+
+    // front leg
+    drawLeg(0, hy, 0, amt, INK);
+
+    // arm + cannon (slight sway with the walk)
+    const sx = 18, sy = cy + 8;
+    ctx.save();
+    ctx.translate(sx, sy);
+    ctx.rotate(Math.sin(m.phase * 2) * 0.03 * amt - (rising ? 0.08 : 0));
+    ctx.lineWidth = 3;
+    line(0, 0, 14, 14);
+    line(14, 14, 26, 6);
+    ctx.lineWidth = 2.2;
+    fillCircle(14, 14, 4); circle(14, 14, 4, 1);
+    rect(10, -6, 98, 14);           // barrel
+    line(40, -6, 40, 8, 1);
+    line(45, -6, 45, 8, 1);
+    line(76, -6, 76, 8, 1);
+    rect(108, -9, 10, 20);          // muzzle
+    rect(18, 8, 10, 12);            // grip
+    ctx.restore();
+
+    ctx.restore();
+  }
+
+  function drawShadow() {
+    const s = Math.max(0.3, 1 + m.y / 300);
+    const x = m.x - camX;
+    for (let i = 0; i < 3; i++) {
+      const w = (44 - i * 10) * s;
+      line(x - w, 4 + i * 3, x + w, 4 + i * 3, 1);
+    }
+  }
+
+  // ---------- scenery ----------
+  function prop(i, x) {
+    const kind = hash(i * 3.7);
+    if (kind < 0.35) {                 // grass tuft
+      line(x, 0, x - 5, -10, 1); line(x + 3, 0, x + 3, -13, 1); line(x + 6, 0, x + 11, -9, 1);
+    } else if (kind < 0.6) {           // rock
+      ctx.fillStyle = PAPER;
+      line(x - 14, 0, x - 10, -12); line(x - 10, -12, x + 4, -16);
+      line(x + 4, -16, x + 15, -6); line(x + 15, -6, x + 18, 0);
+      line(x - 4, -6, x + 6, -9, 1);
+    } else if (kind < 0.8) {           // fence post
+      line(x, 0, x, -46); line(x + 6, 0, x + 6, -46);
+      line(x - 2, -46, x + 8, -46, 1);
+      line(x + 6, -34, x + 40, -30, 1);
+    } else {                           // crate
+      rect(x - 16, -32, 32, 32);
+      line(x - 16, -32, x + 16, 0, 1); line(x + 16, -32, x - 16, 0, 1);
+    }
+  }
+
+  function drawBorder(boil) {
+    seed = boil * 131 + 7;
+    ctx.strokeStyle = INK; ctx.lineWidth = 2.4; jit = 2.4;
+    const p = 12;
+    line(p, p, W - p, p); line(W - p, p, W - p, H - p);
+    line(W - p, H - p, p, H - p); line(p, H - p, p, p);
+    jit = 1.6;
+  }
+
+  // ---------- main loop ----------
+  let camX = 0, last = performance.now();
+
+  function draw(t) {
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    ctx.fillStyle = PAPER; ctx.fillRect(0, 0, W, H);
+    ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+
+    // notebook rules
+    ctx.strokeStyle = 'rgba(80,120,200,.16)'; ctx.lineWidth = 1;
+    for (let y = 60; y < H; y += 30) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke(); }
+
+    const boil = Math.floor(t / 110);
+    const k = Math.max(0.6, Math.min(1.8, Math.min(W / 700, H / 420)));
+    const groundY = H * 0.78;
+
+    ctx.save();
+    ctx.translate(W / 2, groundY);
+    ctx.scale(k, k);
+    ctx.strokeStyle = INK; ctx.lineWidth = 2.2;
+
+    const SEG = 90;
+    const left = camX - W / 2 / k - SEG, right = camX + W / 2 / k + SEG;
+    for (let i = Math.floor(left / SEG); i <= Math.ceil(right / SEG); i++) {
+      seed = boil * 7919 + i * 31 + 5;
+      const x = i * SEG - camX;
+      line(x - 2, 0, x + SEG + 2, 0, 1);
+      if (hash(i + 0.13) > 0.5) line(x + 20, 10, x + 30, 18, 1);   // ground scratches
+      if (hash(i) > 0.45) prop(i, x + hash(i + 0.5) * SEG);
+    }
+
+    seed = boil * 977 + 3;
+    drawShadow();
+    seed = boil * 613 + 11;
+    drawMech(t);
+
+    seed = boil * 211 + 17;
+    for (const d of dust) {
+      ctx.globalAlpha = Math.max(0, d.life);
+      circle(d.x - camX, d.y, d.r, 1);
+    }
+    ctx.globalAlpha = 1;
+    ctx.restore();
+
+    drawBorder(boil);
+  }
+
+  function frame(t) {
+    const dt = Math.min(0.033, (t - last) / 1000);
+    last = t;
+    update(dt);
+    camX += (m.x - camX) * Math.min(1, dt * 4);
+    draw(t);
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
